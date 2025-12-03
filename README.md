@@ -7,6 +7,10 @@ An interactive R Shiny application for processing drone spotchecks.
 - R and RStudio must be installed on your system
 - Download from: https://posit.co/download/rstudio-desktop/
 
+## Setup
+
+Before running the app, place your raw drone images in the `raw` folder in the project directory.
+
 ## How to Run the App
 
 1. Double click on `Spotchecks.Rproj` to open the project in RStudio
