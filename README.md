@@ -21,9 +21,7 @@ Research Officer
 Centre of Tropical Water & Aquatic Ecosystem Research (TropWATER)  
 James Cook University (JCU), Australia
 
-📞 M: 0420392262 | International: (+61) 420392262  
-📧 E: lucas.langlois@jcu.edu.au  
-📍 Postal: Lucas Langlois | James Cook University Nguma-bada Campus | 14-88 McGregor Rd | Room 102R Building E1 | Smithfield QLD 4878 | Australia
+📧 lucas.langlois@jcu.edu.au
 
 ## Citation
 
