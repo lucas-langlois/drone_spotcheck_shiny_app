@@ -1,0 +1,10 @@
+Prerequisite : have R and Rstudio installed
+
+https://posit.co/download/rstudio-desktop/
+
+
+1) Double click on Spotchecks.Rproj
+2) Open drone_spotcheck_shiny_app.R from the files pane (bottom right corner)
+3) Click on top right of script pane "Run App"
+4) Pop up window appear with the interactive app
+
