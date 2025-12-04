@@ -646,43 +646,57 @@ server <- function(input, output, session) {
     
     if(is.null(group)) return(NULL)
     
-    # Create UI for each image in the group
+    # Create UI for each image in the group with larger previews
     image_ui <- lapply(1:nrow(group), function(i) {
       img_path <- group$path[i]
       is_selected <- group$selected[i]
       
-      column(3,
-        div(style = paste0("border: ", if(is_selected) "3px solid #00a65a" else "1px solid #ddd", 
-                          "; padding: 10px; margin: 5px; border-radius: 5px;"),
-          h5(basename(group$FileName[i])),
-          p(format(group$DateTimeOriginal[i], "%H:%M:%S")),
+      # Calculate column width based on number of images (max 2 per row for better viewing)
+      col_width <- if(nrow(group) <= 2) 6 else if(nrow(group) <= 4) 3 else 3
+      
+      column(col_width,
+        div(style = paste0("border: ", if(is_selected) "4px solid #00a65a" else "2px solid #ddd", 
+                          "; padding: 15px; margin: 10px; border-radius: 8px; background-color: ",
+                          if(is_selected) "#f0fff0" else "white", ";"),
+          h5(style = "font-weight: bold;", basename(group$FileName[i])),
+          p(style = "color: #555;", 
+            icon("clock"), " ", format(group$DateTimeOriginal[i], "%H:%M:%S")),
           if(file.exists(img_path)) {
             img_data <- image_read(img_path)
-            img_resized <- image_resize(img_data, "300x300")
+            # Larger preview size for better viewing
+            img_resized <- image_resize(img_data, "800x800")
             temp_file <- tempfile(fileext = ".jpg")
-            image_write(img_resized, temp_file, format = "jpg", quality = 85)
+            image_write(img_resized, temp_file, format = "jpg", quality = 90)
             encoded <- base64enc::base64encode(temp_file)
             unlink(temp_file)
-            tags$img(src = paste0("data:image/jpeg;base64,", encoded), 
-                    width = "100%", style = "cursor: pointer;",
-                    onclick = paste0("Shiny.setInputValue('select_image_", group_idx, "_", i, "', Math.random())"))
+            tags$a(
+              href = paste0("data:image/jpeg;base64,", encoded),
+              target = "_blank",
+              title = "Click to view full size in new tab",
+              tags$img(src = paste0("data:image/jpeg;base64,", encoded), 
+                      width = "100%", 
+                      style = "cursor: zoom-in; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",
+                      onclick = paste0("Shiny.setInputValue('select_image_", group_idx, "_", i, "', Math.random())"))
+            )
           } else {
             p("Image not found")
           },
           br(),
           actionButton(paste0("select_", group_idx, "_", i), 
-                      if(is_selected) "✓ Selected" else "Select This",
-                      class = if(is_selected) "btn-success" else "btn-default",
-                      style = "width: 100%;")
+                      if(is_selected) "✓ SELECTED" else "Select This Image",
+                      class = if(is_selected) "btn-success btn-lg" else "btn-default btn-lg",
+                      style = "width: 100%; margin-top: 10px;",
+                      icon = if(is_selected) icon("check-circle") else icon("circle"))
         )
       )
     })
     
-    fluidRow(
-      column(12,
-        h4(paste("Group", group_idx, "- Select the image to keep:")),
-        fluidRow(image_ui)
-      )
+    tagList(
+      h3(paste("Group", group_idx, "- Review and Select Image"), 
+         style = "color: #3c8dbc; border-bottom: 2px solid #3c8dbc; padding-bottom: 10px;"),
+      p(style = "color: #666; font-style: italic;", 
+        icon("info-circle"), " Click on any image to view full size in a new tab. Select the best image to keep."),
+      fluidRow(image_ui)
     )
   })
   
