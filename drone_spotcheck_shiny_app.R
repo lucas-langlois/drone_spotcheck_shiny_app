@@ -211,9 +211,19 @@ ui <- dashboardPage(
         ),
         fluidRow(
           box(
-            title = "📊 Duplicate Groups", status = "info", solidHeader = TRUE, width = 12,
-            DTOutput("duplicates_table"),
+            title = "🗺️ Duplicate Locations Map", status = "warning", solidHeader = TRUE, width = 12,
+            leafletOutput("duplicates_map", height = "400px"),
             br(),
+            p("Click on markers to see photo details. Duplicate groups are shown in different colors.")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "📊 Duplicate Groups", status = "info", solidHeader = TRUE, width = 6,
+            DTOutput("duplicates_table")
+          ),
+          box(
+            title = "🖼️ Selected Group Preview", status = "success", solidHeader = TRUE, width = 6,
             uiOutput("duplicate_review_ui")
           )
         )
@@ -508,6 +518,30 @@ server <- function(input, output, session) {
       Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
       Count = sapply(rv$duplicate_groups, nrow),
       FirstPhoto = sapply(rv$duplicate_groups, function(g) basename(g$FileName[1])),
+      MaxDistance = sapply(rv$duplicate_groups, function(g) {
+        if(nrow(g) < 2) return("0m")
+        
+        # Calculate max distance between any two photos in the group
+        max_dist <- 0
+        for(i in 1:(nrow(g)-1)) {
+          for(j in (i+1):nrow(g)) {
+            lat1 <- g$GPSLatitude[i] * pi/180
+            lat2 <- g$GPSLatitude[j] * pi/180
+            lon1 <- g$GPSLongitude[i] * pi/180
+            lon2 <- g$GPSLongitude[j] * pi/180
+            
+            dlat <- lat2 - lat1
+            dlon <- lon2 - lon1
+            
+            a <- sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2
+            c <- 2 * atan2(sqrt(a), sqrt(1-a))
+            distance <- 6371000 * c  # Earth radius in meters
+            
+            max_dist <- max(max_dist, distance)
+          }
+        }
+        paste0(round(max_dist, 1), "m")
+      }),
       TimeDiff = sapply(rv$duplicate_groups, function(g) {
         paste0(round(as.numeric(difftime(max(g$DateTimeOriginal), 
                                          min(g$DateTimeOriginal), units = "secs"))), "s")
@@ -518,6 +552,88 @@ server <- function(input, output, session) {
               options = list(pageLength = 10),
               rownames = FALSE,
               selection = 'single')
+  })
+  
+  # Render duplicates map
+  output$duplicates_map <- renderLeaflet({
+    req(rv$duplicate_groups)
+    
+    if(length(rv$duplicate_groups) == 0) {
+      return(
+        leaflet() %>%
+          addProviderTiles(providers$Esri.WorldImagery) %>%
+          setView(lng = 0, lat = 0, zoom = 2) %>%
+          addControl(html = "<div style='background: white; padding: 10px; border-radius: 5px;'>No duplicates detected yet.</div>",
+                    position = "topright")
+      )
+    }
+    
+    # Create color palette for different groups
+    colors <- c("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", 
+                "#ffff33", "#a65628", "#f781bf", "#999999", "#66c2a5")
+    
+    # Prepare data for mapping
+    map_data <- do.call(rbind, lapply(1:length(rv$duplicate_groups), function(i) {
+      group <- rv$duplicate_groups[[i]]
+      group$color <- colors[(i %% length(colors)) + 1]
+      group$group_num <- i
+      return(group)
+    }))
+    
+    # Create map with increased max zoom
+    m <- leaflet(map_data, options = leafletOptions(maxZoom = 25)) %>%
+      addProviderTiles(providers$Esri.WorldImagery, options = providerTileOptions(maxZoom = 25))
+    
+    # Add markers for each group with different colors
+    for(i in 1:length(rv$duplicate_groups)) {
+      group <- rv$duplicate_groups[[i]]
+      group_color <- colors[(i %% length(colors)) + 1]
+      
+      m <- m %>%
+        addCircleMarkers(
+          data = group,
+          lng = ~GPSLongitude,
+          lat = ~GPSLatitude,
+          radius = 8,
+          color = group_color,
+          fillColor = group_color,
+          fillOpacity = 0.7,
+          stroke = TRUE,
+          weight = 2,
+          popup = ~paste0(
+            "<b>Group ", i, "</b><br>",
+            "<b>Filename:</b> ", basename(FileName), "<br>",
+            "<b>Time:</b> ", format(DateTimeOriginal, "%H:%M:%S"), "<br>",
+            "<b>Selected:</b> ", ifelse(selected, "✓ Yes", "No")
+          ),
+          label = ~paste("Group", i),
+          labelOptions = labelOptions(
+            noHide = TRUE,
+            direction = "center",
+            textOnly = TRUE,
+            style = list(
+              "color" = "white",
+              "font-weight" = "bold",
+              "font-size" = "12px",
+              "text-shadow" = "2px 2px 4px #000000"
+            )
+          ),
+          group = paste("Group", i)
+        )
+    }
+    
+    # Add legend
+    m <- m %>%
+      addLegend(
+        position = "bottomright",
+        colors = colors[1:min(length(rv$duplicate_groups), length(colors))],
+        labels = paste("Group", 1:min(length(rv$duplicate_groups), length(colors))),
+        title = "Duplicate Groups",
+        opacity = 0.7
+      ) %>%
+      addScaleBar(position = "bottomleft")
+    
+    return(m)
   })
   
   # Render duplicate review UI
@@ -912,8 +1028,8 @@ server <- function(input, output, session) {
     
     spotcheck <- rv$spotcheck
     
-    leaflet(spotcheck) %>%
-      addProviderTiles(providers$Esri.WorldImagery) %>%
+    leaflet(spotcheck, options = leafletOptions(maxZoom = 25)) %>%
+      addProviderTiles(providers$Esri.WorldImagery, options = providerTileOptions(maxZoom = 25)) %>%
       addCircleMarkers(
         lng = ~LONGITUDE,
         lat = ~LATITUDE,
