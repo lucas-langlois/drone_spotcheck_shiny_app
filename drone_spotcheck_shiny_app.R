@@ -83,6 +83,7 @@ ui <- dashboardPage(
   dashboardSidebar(
     sidebarMenu(
       menuItem("📁 Setup & Process", tabName = "process", icon = icon("cogs")),
+      menuItem("🔍 Duplicate Review", tabName = "duplicates", icon = icon("clone")),
       menuItem("🗺️ Map View", tabName = "map", icon = icon("map")),
       menuItem("📊 Data Explorer", tabName = "data", icon = icon("table")),
       menuItem("🖼️ Image Gallery", tabName = "gallery", icon = icon("images")),
@@ -137,12 +138,17 @@ ui <- dashboardPage(
             p("Click the steps below to process your drone images:"),
             br(),
             fluidRow(
-              column(3,
+              column(2,
+                actionBttn("btn_detect_duplicates", "Step 0: Detect Duplicates", 
+                          style = "fill", color = "royal", size = "lg", block = TRUE,
+                          icon = icon("clone"))
+              ),
+              column(2,
                 actionBttn("btn_rename", "Step 1: Rename Photos", 
                           style = "fill", color = "primary", size = "lg", block = TRUE,
                           icon = icon("file-signature"))
               ),
-              column(3,
+              column(2,
                 actionBttn("btn_exif", "Step 2: Extract EXIF", 
                           style = "fill", color = "success", size = "lg", block = TRUE,
                           icon = icon("camera"))
@@ -171,7 +177,49 @@ ui <- dashboardPage(
         )
       ),
       
-      # Tab 2: Map
+      # Tab 2: Duplicate Review
+      tabItem(tabName = "duplicates",
+        fluidRow(
+          box(
+            title = "🔍 Duplicate Detection Settings", status = "primary", solidHeader = TRUE, width = 12,
+            fluidRow(
+              column(3,
+                numericInput("distance_threshold", "Distance Threshold (meters):",
+                            value = 5, min = 1, max = 50, step = 1),
+                helpText("Photos within this distance OR time threshold")
+              ),
+              column(3,
+                numericInput("time_threshold", "Time Threshold (seconds):",
+                            value = 30, min = 5, max = 120, step = 5),
+                helpText("Photos within this time OR distance threshold")
+              ),
+              column(3,
+                actionButton("btn_refresh_duplicates", "Refresh Detection",
+                            class = "btn-primary btn-lg", style = "margin-top: 25px;"),
+                helpText("Re-analyze with new settings")
+              ),
+              column(3,
+                actionButton("btn_apply_selection", "Apply Selection",
+                            class = "btn-success btn-lg", style = "margin-top: 25px;"),
+                helpText("Save selected images and exclude duplicates")
+              )
+            ),
+            br(),
+            p(style = "color: #555; font-style: italic;", 
+              "ℹ️ Photos are grouped as duplicates if they meet EITHER the distance OR time threshold (or both).")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "📊 Duplicate Groups", status = "info", solidHeader = TRUE, width = 12,
+            DTOutput("duplicates_table"),
+            br(),
+            uiOutput("duplicate_review_ui")
+          )
+        )
+      ),
+      
+      # Tab 3: Map
       tabItem(tabName = "map",
         fluidRow(
           box(
@@ -183,7 +231,7 @@ ui <- dashboardPage(
         )
       ),
       
-      # Tab 3: Data Explorer
+      # Tab 4: Data Explorer
       tabItem(tabName = "data",
         fluidRow(
           box(
@@ -195,7 +243,7 @@ ui <- dashboardPage(
         )
       ),
       
-      # Tab 4: Gallery
+      # Tab 5: Gallery
       tabItem(tabName = "gallery",
         fluidRow(
           box(
@@ -207,7 +255,7 @@ ui <- dashboardPage(
         )
       ),
       
-      # Tab 5: Statistics
+      # Tab 6: Statistics
       tabItem(tabName = "stats",
         fluidRow(
           box(
@@ -237,12 +285,68 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     spotcheck = NULL,
     exif_data = NULL,
+    raw_exif = NULL,
+    duplicate_groups = NULL,
+    selected_photos = NULL,
+    duplicates_detected = FALSE,
     photos_renamed = FALSE,
     exif_extracted = FALSE,
     images_cropped = FALSE,
     data_exported = FALSE,
     log = "Ready to process images...\n"
   )
+  
+  # Helper function to detect duplicates
+  detect_duplicates_func <- function(exif_raw, dist_threshold, time_threshold) {
+    duplicate_groups <- list()
+    group_id <- 1
+    processed <- rep(FALSE, nrow(exif_raw))
+    
+    for(i in 1:(nrow(exif_raw)-1)) {
+      if(processed[i]) next
+      
+      group <- c(i)
+      
+      for(j in (i+1):nrow(exif_raw)) {
+        if(processed[j]) next
+        
+        # Calculate distance in meters using Haversine formula
+        lat1 <- exif_raw$GPSLatitude[i] * pi/180
+        lat2 <- exif_raw$GPSLatitude[j] * pi/180
+        lon1 <- exif_raw$GPSLongitude[i] * pi/180
+        lon2 <- exif_raw$GPSLongitude[j] * pi/180
+        
+        dlat <- lat2 - lat1
+        dlon <- lon2 - lon1
+        
+        a <- sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2
+        c <- 2 * atan2(sqrt(a), sqrt(1-a))
+        distance <- 6371000 * c  # Earth radius in meters
+        
+        # Calculate time difference in seconds
+        time_diff <- abs(as.numeric(difftime(exif_raw$DateTimeOriginal[i],
+                                             exif_raw$DateTimeOriginal[j],
+                                             units = "secs")))
+        
+        # Check if within thresholds (OR logic - either distance OR time)
+        if(distance <= dist_threshold || time_diff <= time_threshold) {
+          group <- c(group, j)
+          processed[j] <- TRUE
+        }
+      }
+      
+      if(length(group) > 1) {
+        duplicate_groups[[group_id]] <- exif_raw[group, ]
+        duplicate_groups[[group_id]]$group_id <- group_id
+        duplicate_groups[[group_id]]$selected <- FALSE
+        duplicate_groups[[group_id]]$selected[1] <- TRUE  # Select first by default
+        group_id <- group_id + 1
+      }
+      processed[i] <- TRUE
+    }
+    
+    return(duplicate_groups)
+  }
   
   # Check for existing work on startup (run once)
   observe({
@@ -301,16 +405,250 @@ server <- function(input, output, session) {
     })
   })
   
-  # Step 1: Rename Photos
-  observeEvent(input$btn_rename, {
-    withProgress(message = 'Renaming photos...', value = 0, {
+  # Step 0: Detect Duplicates
+  observeEvent(input$btn_detect_duplicates, {
+    withProgress(message = 'Detecting duplicate images...', value = 0, {
       
       tryCatch({
+        incProgress(0.2, detail = "Reading raw photos...")
+        
         list_photo <- list.files("raw", full.names = TRUE, pattern = "\\.JPG$")
         
         if(length(list_photo) == 0) {
           rv$log <- paste0(rv$log, "❌ ERROR: No JPG files found in 'raw' folder\n")
           showNotification("No JPG files found in 'raw' folder", type = "error")
+          return()
+        }
+        
+        incProgress(0.3, detail = "Extracting EXIF data...")
+        
+        # Extract EXIF data for duplicate detection
+        exif_raw <- exifr::read_exif(list_photo,
+                                     tags = c("FileName", "DateTimeOriginal", "GPSLatitude",
+                                            "GPSLongitude"),
+                                     recursive = FALSE)
+        
+        exif_raw <- as.data.frame(exif_raw)
+        exif_raw$path <- list_photo
+        exif_raw$DateTimeOriginal <- as.POSIXct(exif_raw$DateTimeOriginal, format="%Y:%m:%d %H:%M:%S")
+        
+        incProgress(0.3, detail = "Analyzing for duplicates...")
+        
+        # Use helper function to detect duplicates
+        duplicate_groups <- detect_duplicates_func(exif_raw, input$distance_threshold, input$time_threshold)
+        
+        rv$raw_exif <- exif_raw
+        rv$duplicate_groups <- duplicate_groups
+        rv$duplicates_detected <- TRUE
+        
+        # Initialize selected photos with all non-duplicates and first of each duplicate group
+        non_dup_indices <- which(!processed | sapply(1:nrow(exif_raw), function(i) {
+          any(sapply(duplicate_groups, function(g) i %in% as.numeric(rownames(g)) && g$selected[which(as.numeric(rownames(g)) == i)]))
+        }))
+        
+        rv$selected_photos <- exif_raw$path
+        
+        incProgress(0.2, detail = "Done!")
+        
+        n_groups <- length(duplicate_groups)
+        n_total_dups <- sum(sapply(duplicate_groups, nrow))
+        
+        rv$log <- paste0(rv$log, "✅ Step 0 Complete: Found ", n_groups, 
+                        " duplicate groups (", n_total_dups, " photos total)\n",
+                        "   Please review duplicates in the 'Duplicate Review' tab\n")
+        showNotification(paste("Found", n_groups, "duplicate groups!"), type = "message")
+        
+        # Switch to duplicates tab
+        updateTabItems(session, "sidebar", "duplicates")
+        
+      }, error = function(e) {
+        rv$log <- paste0(rv$log, "❌ ERROR: ", e$message, "\n")
+        showNotification(paste("Error:", e$message), type = "error")
+      })
+    })
+  })
+  
+  # Refresh duplicate detection with new settings
+  observeEvent(input$btn_refresh_duplicates, {
+    req(rv$raw_exif)
+    
+    withProgress(message = 'Re-analyzing duplicates...', value = 0, {
+      tryCatch({
+        incProgress(0.5, detail = "Detecting duplicates with new settings...")
+        
+        # Re-run duplicate detection with updated thresholds
+        duplicate_groups <- detect_duplicates_func(rv$raw_exif, 
+                                                   input$distance_threshold, 
+                                                   input$time_threshold)
+        
+        rv$duplicate_groups <- duplicate_groups
+        
+        incProgress(0.5, detail = "Done!")
+        
+        n_groups <- length(duplicate_groups)
+        n_total_dups <- if(n_groups > 0) sum(sapply(duplicate_groups, nrow)) else 0
+        
+        rv$log <- paste0(rv$log, "🔄 Duplicates refreshed: Found ", n_groups, 
+                        " groups (", n_total_dups, " photos) with new settings\n")
+        showNotification(paste("Found", n_groups, "duplicate groups with new settings!"), 
+                        type = "message")
+        
+      }, error = function(e) {
+        showNotification(paste("Error:", e$message), type = "error")
+      })
+    })
+  })
+  
+  # Render duplicates table
+  output$duplicates_table <- renderDT({
+    req(rv$duplicate_groups)
+    
+    if(length(rv$duplicate_groups) == 0) {
+      return(data.frame(Message = "No duplicates found!"))
+    }
+    
+    # Create summary table
+    summary_df <- data.frame(
+      Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
+      Count = sapply(rv$duplicate_groups, nrow),
+      FirstPhoto = sapply(rv$duplicate_groups, function(g) basename(g$FileName[1])),
+      TimeDiff = sapply(rv$duplicate_groups, function(g) {
+        paste0(round(as.numeric(difftime(max(g$DateTimeOriginal), 
+                                         min(g$DateTimeOriginal), units = "secs"))), "s")
+      })
+    )
+    
+    datatable(summary_df, 
+              options = list(pageLength = 10),
+              rownames = FALSE,
+              selection = 'single')
+  })
+  
+  # Render duplicate review UI
+  output$duplicate_review_ui <- renderUI({
+    req(rv$duplicate_groups)
+    req(input$duplicates_table_rows_selected)
+    
+    group_idx <- input$duplicates_table_rows_selected
+    group <- rv$duplicate_groups[[group_idx]]
+    
+    if(is.null(group)) return(NULL)
+    
+    # Create UI for each image in the group
+    image_ui <- lapply(1:nrow(group), function(i) {
+      img_path <- group$path[i]
+      is_selected <- group$selected[i]
+      
+      column(3,
+        div(style = paste0("border: ", if(is_selected) "3px solid #00a65a" else "1px solid #ddd", 
+                          "; padding: 10px; margin: 5px; border-radius: 5px;"),
+          h5(basename(group$FileName[i])),
+          p(format(group$DateTimeOriginal[i], "%H:%M:%S")),
+          if(file.exists(img_path)) {
+            img_data <- image_read(img_path)
+            img_resized <- image_resize(img_data, "300x300")
+            temp_file <- tempfile(fileext = ".jpg")
+            image_write(img_resized, temp_file, format = "jpg", quality = 85)
+            encoded <- base64enc::base64encode(temp_file)
+            unlink(temp_file)
+            tags$img(src = paste0("data:image/jpeg;base64,", encoded), 
+                    width = "100%", style = "cursor: pointer;",
+                    onclick = paste0("Shiny.setInputValue('select_image_", group_idx, "_", i, "', Math.random())"))
+          } else {
+            p("Image not found")
+          },
+          br(),
+          actionButton(paste0("select_", group_idx, "_", i), 
+                      if(is_selected) "✓ Selected" else "Select This",
+                      class = if(is_selected) "btn-success" else "btn-default",
+                      style = "width: 100%;")
+        )
+      )
+    })
+    
+    fluidRow(
+      column(12,
+        h4(paste("Group", group_idx, "- Select the image to keep:")),
+        fluidRow(image_ui)
+      )
+    )
+  })
+  
+  # Handle image selection in duplicate groups
+  observe({
+    req(rv$duplicate_groups)
+    
+    for(group_idx in 1:length(rv$duplicate_groups)) {
+      group <- rv$duplicate_groups[[group_idx]]
+      
+      for(img_idx in 1:nrow(group)) {
+        local({
+          g_idx <- group_idx
+          i_idx <- img_idx
+          
+          observeEvent(input[[paste0("select_", g_idx, "_", i_idx)]], {
+            # Update selection
+            rv$duplicate_groups[[g_idx]]$selected <- FALSE
+            rv$duplicate_groups[[g_idx]]$selected[i_idx] <- TRUE
+          })
+        })
+      }
+    }
+  })
+  
+  # Apply selection button
+  observeEvent(input$btn_apply_selection, {
+    req(rv$duplicate_groups)
+    req(rv$raw_exif)
+    
+    tryCatch({
+      # Get all selected photos
+      selected_paths <- rv$raw_exif$path
+      
+      # Remove non-selected duplicates
+      for(group in rv$duplicate_groups) {
+        non_selected <- group$path[!group$selected]
+        selected_paths <- selected_paths[!selected_paths %in% non_selected]
+      }
+      
+      rv$selected_photos <- selected_paths
+      
+      # Create filtered folder
+      dir.create("raw_filtered", showWarnings = FALSE)
+      
+      for(photo in selected_paths) {
+        file.copy(photo, file.path("raw_filtered", basename(photo)), overwrite = TRUE)
+      }
+      
+      n_excluded <- length(rv$raw_exif$path) - length(selected_paths)
+      
+      rv$log <- paste0(rv$log, "✅ Selection applied: ", length(selected_paths), 
+                      " photos selected, ", n_excluded, " duplicates excluded\n",
+                      "   Filtered photos saved to 'raw_filtered' folder\n")
+      
+      showNotification(paste("Selection saved!", length(selected_paths), "photos ready for processing"), 
+                      type = "message")
+      
+      # Switch back to process tab
+      updateTabItems(session, "sidebar", "process")
+      
+    }, error = function(e) {
+      showNotification(paste("Error:", e$message), type = "error")
+    })
+  })
+  
+  # Step 1: Rename Photos
+  observeEvent(input$btn_rename, {
+    withProgress(message = 'Renaming photos...', value = 0, {
+      
+      tryCatch({
+        # Use filtered photos if duplicates were processed, otherwise use raw
+        source_folder <- if(dir.exists("raw_filtered")) "raw_filtered" else "raw"
+        list_photo <- list.files(source_folder, full.names = TRUE, pattern = "\\.JPG$")
+        
+        if(length(list_photo) == 0) {
+          rv$log <- paste0(rv$log, "❌ ERROR: No JPG files found in '", source_folder, "' folder\n")
+          showNotification(paste("No JPG files found in", source_folder, "folder"), type = "error")
           return()
         }
         
