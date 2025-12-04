@@ -4,8 +4,38 @@ An interactive R Shiny application for processing drone spotchecks.
 
 ## Prerequisites
 
-- R and RStudio must be installed on your system
-- Download from: https://posit.co/download/rstudio-desktop/
+### 1. R and RStudio
+- Download and install from: https://posit.co/download/rstudio-desktop/
+
+### 2. ExifTool (Required for extracting photo metadata)
+
+**Windows Installation Steps:**
+
+1. **Download ExifTool:**
+   - Go to: https://exiftool.org/
+   - Download the Windows Executable (e.g., `exiftool-12.70.zip`)
+
+2. **Extract and Rename:**
+   - Extract the downloaded zip file
+   - You will find a file named `exiftool(-k).exe`
+   - Rename it to `exiftool.exe` (remove the `(-k)` part)
+
+3. **Choose Installation Location:**
+   - **Option A (Recommended):** Place in `C:\Windows\` (requires admin rights)
+   - **Option B:** Place in a folder like `C:\exiftool\` and add to PATH (see step 4)
+
+4. **Add to PATH Environment Variable (if using Option B):**
+   - Right-click on "This PC" or "My Computer" → Properties
+   - Click "Advanced system settings" → "Environment Variables"
+   - Under "System variables", find and select "Path" → Click "Edit"
+   - Click "New" and add the folder path (e.g., `C:\exiftool\`)
+   - Click "OK" to close all windows
+
+5. **Verify Installation:**
+   - Open Command Prompt (Win + R, type `cmd`, press Enter)
+   - Type: `exiftool -ver`
+   - You should see the version number (e.g., `12.70`)
+   - If you see an error, restart your computer and try again
 
 ## Setup
 
