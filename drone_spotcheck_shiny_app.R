@@ -6,11 +6,11 @@
 ## This section checks and installs any missing packages
 #######################################
 
-# List of required packages
+# List of required packages (order matters - terra must be installed before tidyterra)
 required_packages <- c(
-  "shiny", "shinydashboard", "tidyverse", "terra", "tidyterra",
-  "magick", "lubridate", "exifr", "leaflet", "DT",
-  "shinyjs", "shinyWidgets", "plotly", "base64enc"
+  "shiny", "shinydashboard", "tidyverse", "magick", "lubridate", 
+  "exifr", "leaflet", "DT", "shinyjs", "shinyWidgets", "plotly", "base64enc",
+  "terra", "tidyterra"  # terra MUST be installed before tidyterra
 )
 
 # Function to check and install packages
@@ -19,14 +19,38 @@ install_if_missing <- function(packages) {
   
   if(length(new_packages) > 0) {
     cat("📦 Installing missing packages:", paste(new_packages, collapse=", "), "\n")
-    cat("This may take a few minutes...\n\n")
+    cat("This may take a few minutes...\n")
+    cat("ℹ️  Note: terra will be installed before tidyterra (required dependency)\n\n")
     
-    install.packages(new_packages, 
-                    repos = "https://cloud.r-project.org/",
-                    dependencies = TRUE,
-                    quiet = FALSE)
+    failed_packages <- c()
     
-    cat("\n✅ Package installation complete!\n\n")
+    for(pkg in new_packages) {
+      cat("Installing", pkg, "...\n")
+      tryCatch({
+        install.packages(pkg, 
+                        repos = "https://cloud.r-project.org/",
+                        dependencies = TRUE,
+                        quiet = FALSE)
+        cat("✅", pkg, "installed successfully\n")
+      }, error = function(e) {
+        cat("❌ Failed to install", pkg, "\n")
+        cat("   Error:", conditionMessage(e), "\n")
+        failed_packages <<- c(failed_packages, pkg)
+      })
+    }
+    
+    if(length(failed_packages) > 0) {
+      cat("\n⚠️ WARNING: The following packages failed to install:\n")
+      cat("   ", paste(failed_packages, collapse=", "), "\n\n")
+      cat("📝 Common solutions:\n")
+      cat("   • For 'terra' issues: Make sure you have Rtools installed (Windows)\n")
+      cat("   • For 'tidyterra': Install 'terra' first, then try again\n")
+      cat("   • Try installing manually: install.packages('", failed_packages[1], "')\n")
+      cat("   • Check that your R version is up-to-date (R >= 4.0)\n\n")
+      stop("Package installation incomplete. Please resolve the issues above and restart the app.")
+    } else {
+      cat("\n✅ All packages installed successfully!\n\n")
+    }
   } else {
     cat("✅ All required packages are already installed!\n\n")
   }
