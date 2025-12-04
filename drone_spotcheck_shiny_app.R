@@ -441,17 +441,13 @@ server <- function(input, output, session) {
         rv$duplicate_groups <- duplicate_groups
         rv$duplicates_detected <- TRUE
         
-        # Initialize selected photos with all non-duplicates and first of each duplicate group
-        non_dup_indices <- which(!processed | sapply(1:nrow(exif_raw), function(i) {
-          any(sapply(duplicate_groups, function(g) i %in% as.numeric(rownames(g)) && g$selected[which(as.numeric(rownames(g)) == i)]))
-        }))
-        
+        # Initialize selected photos (all photos by default)
         rv$selected_photos <- exif_raw$path
         
         incProgress(0.2, detail = "Done!")
         
         n_groups <- length(duplicate_groups)
-        n_total_dups <- sum(sapply(duplicate_groups, nrow))
+        n_total_dups <- if(n_groups > 0) sum(sapply(duplicate_groups, nrow)) else 0
         
         rv$log <- paste0(rv$log, "✅ Step 0 Complete: Found ", n_groups, 
                         " duplicate groups (", n_total_dups, " photos total)\n",
