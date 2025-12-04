@@ -297,6 +297,7 @@ server <- function(input, output, session) {
     exif_data = NULL,
     raw_exif = NULL,
     duplicate_groups = NULL,
+    duplicate_selections = list(),  # Store selections separately to avoid triggering UI re-renders
     selected_photos = NULL,
     duplicates_detected = FALSE,
     photos_renamed = FALSE,
@@ -415,6 +416,9 @@ server <- function(input, output, session) {
     })
   })
   
+  # Trigger variable for when duplicate groups are initialized (not when selections change)
+  rv$duplicates_initialized <- FALSE
+  
   # Step 0: Detect Duplicates
   observeEvent(input$btn_detect_duplicates, {
     withProgress(message = 'Detecting duplicate images...', value = 0, {
@@ -463,6 +467,9 @@ server <- function(input, output, session) {
                         " duplicate groups (", n_total_dups, " photos total)\n",
                         "   Please review duplicates in the 'Duplicate Review' tab\n")
         showNotification(paste("Found", n_groups, "duplicate groups!"), type = "message")
+        
+        # Trigger observer setup
+        rv$duplicates_initialized <- TRUE
         
         # Switch to duplicates tab
         updateTabItems(session, "sidebar", "duplicates")
@@ -641,12 +648,14 @@ server <- function(input, output, session) {
   # Cache for encoded images to avoid re-encoding on selection changes
   image_cache <- reactiveVal(list())
   
-  # Render duplicate review UI
+  # Render duplicate review UI - completely isolated from selection changes
   output$duplicate_review_ui <- renderUI({
-    req(rv$duplicate_groups)
+    # Only respond to table row selection changes, not to rv$duplicate_groups or selections
     req(input$duplicates_table_rows_selected)
-    
     group_idx <- input$duplicates_table_rows_selected
+    
+    # Isolate everything to prevent any reactive updates
+    req(isolate(rv$duplicate_groups))
     group <- isolate(rv$duplicate_groups[[group_idx]])
     
     if(is.null(group)) return(NULL)
@@ -654,18 +663,24 @@ server <- function(input, output, session) {
     # Get current cache
     cache <- isolate(image_cache())
     
+    # Get selections from separate storage (or use default from group)
+    selections <- isolate(rv$duplicate_selections[[as.character(group_idx)]])
+    if(is.null(selections)) {
+      selections <- group$selected
+    }
+    
     # Create UI for each image in the group with larger previews
     image_ui <- lapply(1:nrow(group), function(i) {
       img_path <- group$path[i]
-      is_selected <- rv$duplicate_groups[[group_idx]]$selected[i]  # Only this is reactive
+      is_selected <- selections[i]  # Use separate selection storage
       
       # Calculate column width based on number of images (max 2 per row for better viewing)
       col_width <- if(nrow(group) <= 2) 6 else if(nrow(group) <= 4) 3 else 3
       
       column(col_width,
-        div(style = paste0("border: ", if(is_selected) "4px solid #00a65a" else "2px solid #ddd", 
-                          "; padding: 15px; margin: 10px; border-radius: 8px; background-color: ",
-                          if(is_selected) "#f0fff0" else "white", ";"),
+        div(id = paste0("image_border_", group_idx, "_", i),
+            style = paste0("border: ", if(is_selected) "4px solid #00a65a" else "2px solid #ddd", 
+                          "; padding: 15px; margin: 10px; border-radius: 8px; background-color: white;"),
           h5(style = "font-weight: bold;", basename(group$FileName[i])),
           p(style = "color: #555;", 
             icon("clock"), " ", format(group$DateTimeOriginal[i], "%H:%M:%S")),
@@ -723,8 +738,9 @@ server <- function(input, output, session) {
           br(),
           actionButton(paste0("select_", group_idx, "_", i), 
                       if(is_selected) "✓ SELECTED" else "Select This Image",
-                      class = if(is_selected) "btn-success btn-lg" else "btn-default btn-lg",
-                      style = "width: 100%; margin-top: 10px;",
+                      class = "btn-default btn-lg",
+                      style = paste0("width: 100%; margin-top: 10px; ",
+                                    if(is_selected) "font-weight: bold; color: #00a65a;" else ""),
                       icon = if(is_selected) icon("check-circle") else icon("circle"))
         )
       )
@@ -753,33 +769,71 @@ server <- function(input, output, session) {
     )
   })
   
-  # Handle image selection in duplicate groups
-  observe({
+  # Handle image selection - setup observers for all possible button IDs dynamically
+  # Only triggers once when duplicates are initialized, not on selection changes
+  observeEvent(rv$duplicates_initialized, {
+    req(rv$duplicates_initialized)
     req(rv$duplicate_groups)
     
-    for(group_idx in 1:length(rv$duplicate_groups)) {
-      group <- rv$duplicate_groups[[group_idx]]
+    # Setup observers for all groups (only runs once when initialized)
+    groups_snapshot <- isolate(rv$duplicate_groups)
+    
+    for(group_idx in 1:length(groups_snapshot)) {
+      group <- groups_snapshot[[group_idx]]
       
       # Handle "Keep All" button
       local({
         g_idx <- group_idx
         observeEvent(input[[paste0("keep_all_", g_idx)]], {
-          # Select all images in this group
-          rv$duplicate_groups[[g_idx]]$selected <- TRUE
-        })
+          # Update selection data in separate storage (not in duplicate_groups)
+          rv$duplicate_selections[[as.character(g_idx)]] <- rep(TRUE, nrow(rv$duplicate_groups[[g_idx]]))
+          
+          # Update UI buttons and borders without re-rendering
+          for(i in 1:nrow(rv$duplicate_groups[[g_idx]])) {
+            shinyjs::html(id = paste0("select_", g_idx, "_", i), html = '<i class="fa fa-check-circle"></i> ✓ SELECTED')
+            shinyjs::runjs(paste0("$('#select_", g_idx, "_", i, "').css({'font-weight': 'bold', 'color': '#00a65a'});"))
+            # Update border to green
+            shinyjs::runjs(paste0("$('#image_border_", g_idx, "_", i, "').css({'border': '4px solid #00a65a', 'background-color': 'white'});"))
+          }
+          shinyjs::removeClass(id = paste0("keep_all_", g_idx), class = "btn-outline-warning")
+          shinyjs::addClass(id = paste0("keep_all_", g_idx), class = "btn-warning")
+          shinyjs::html(id = paste0("keep_all_", g_idx), html = "✓ KEEPING ALL")
+        }, ignoreInit = TRUE)
       })
       
-      # Handle individual image selection
+      # Handle individual image selections
       for(img_idx in 1:nrow(group)) {
         local({
-          g_idx <- group_idx
           i_idx <- img_idx
+          g_idx <- group_idx
           
           observeEvent(input[[paste0("select_", g_idx, "_", i_idx)]], {
-            # Update selection (only this one selected)
-            rv$duplicate_groups[[g_idx]]$selected <- FALSE
-            rv$duplicate_groups[[g_idx]]$selected[i_idx] <- TRUE
-          })
+            # Update selection data in separate storage (only this one selected)
+            selections <- rep(FALSE, nrow(rv$duplicate_groups[[g_idx]]))
+            selections[i_idx] <- TRUE
+            rv$duplicate_selections[[as.character(g_idx)]] <- selections
+            
+            # Update UI buttons and borders for all images in this group without re-rendering
+            for(i in 1:nrow(rv$duplicate_groups[[g_idx]])) {
+              if(i == i_idx) {
+                # This button should be selected
+                shinyjs::html(id = paste0("select_", g_idx, "_", i), html = '<i class="fa fa-check-circle"></i> ✓ SELECTED')
+                shinyjs::runjs(paste0("$('#select_", g_idx, "_", i, "').css({'font-weight': 'bold', 'color': '#00a65a'});"))
+                # Update border to green
+                shinyjs::runjs(paste0("$('#image_border_", g_idx, "_", i, "').css({'border': '4px solid #00a65a', 'background-color': 'white'});"))
+              } else {
+                # This button should be deselected
+                shinyjs::html(id = paste0("select_", g_idx, "_", i), html = '<i class="fa fa-circle"></i> Select This Image')
+                shinyjs::runjs(paste0("$('#select_", g_idx, "_", i, "').css({'font-weight': 'normal', 'color': ''});"))
+                # Update border to gray
+                shinyjs::runjs(paste0("$('#image_border_", g_idx, "_", i, "').css({'border': '2px solid #ddd', 'background-color': 'white'});"))
+              }
+            }
+            # Update "Keep All" button to deselected state
+            shinyjs::removeClass(id = paste0("keep_all_", g_idx), class = "btn-warning")
+            shinyjs::addClass(id = paste0("keep_all_", g_idx), class = "btn-outline-warning")
+            shinyjs::html(id = paste0("keep_all_", g_idx), html = "Keep All Images")
+          }, ignoreInit = TRUE)
         })
       }
     }
@@ -794,9 +848,15 @@ server <- function(input, output, session) {
       # Get all selected photos
       selected_paths <- rv$raw_exif$path
       
-      # Remove non-selected duplicates
-      for(group in rv$duplicate_groups) {
-        non_selected <- group$path[!group$selected]
+      # Remove non-selected duplicates using separate selection storage
+      for(group_idx in 1:length(rv$duplicate_groups)) {
+        group <- rv$duplicate_groups[[group_idx]]
+        # Get selections from separate storage or use defaults
+        selections <- rv$duplicate_selections[[as.character(group_idx)]]
+        if(is.null(selections)) {
+          selections <- group$selected
+        }
+        non_selected <- group$path[!selections]
         selected_paths <- selected_paths[!selected_paths %in% non_selected]
       }
       
