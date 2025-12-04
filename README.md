@@ -69,12 +69,27 @@ Identify and manage duplicate images taken at the same location or in quick succ
 
 **Features:**
 - **Automatic Detection**: Groups photos by proximity (distance threshold in meters) OR time (seconds)
+- **Interactive Summary Table**: 
+  - View all duplicate groups with count and selected status
+  - Click any group row to review images
+  - Live updates when selections change
 - **Interactive Map Viewer**: Visualize duplicate groups on a satellite map with color-coded markers
 - **Distance Calculation**: See maximum distance between photos in each group
 - **Adjustable Thresholds**: Customize distance (1-50m) and time (5-120s) sensitivity
-- **Image Comparison**: View large previews (800x800px) of duplicate candidates side-by-side
+- **Image Comparison Review Pane**: 
+  - Large image previews (600x600px) for clear comparison
+  - Green border highlights currently selected image(s)
+  - Side-by-side view of all images in the group
 - **Full-Size Zoom**: Click any image to open full resolution in a popup window
-- **Manual Selection**: Choose the best image from each duplicate group
+- **Flexible Selection Options**:
+  - Select individual best image from each group
+  - "Keep All Images" button to preserve all photos if actually different
+  - Visual feedback with green borders and bold text
+  - Instant UI updates without page refresh
+- **Optimized Performance**: 
+  - Image caching for fast selection changes
+  - JavaScript-based updates prevent UI freezing
+  - Smooth, responsive interaction
 - **Refresh Detection**: Re-analyze with new settings without re-scanning photos
 
 **Outputs:**
