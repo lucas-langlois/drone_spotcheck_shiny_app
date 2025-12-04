@@ -488,6 +488,7 @@ server <- function(input, output, session) {
                                                    input$time_threshold)
         
         rv$duplicate_groups <- duplicate_groups
+        image_cache(list())  # Clear cache when refreshing
         
         incProgress(0.5, detail = "Done!")
         
@@ -517,6 +518,7 @@ server <- function(input, output, session) {
     summary_df <- data.frame(
       Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
       Count = sapply(rv$duplicate_groups, nrow),
+      Selected = sapply(rv$duplicate_groups, function(g) sum(g$selected)),
       FirstPhoto = sapply(rv$duplicate_groups, function(g) basename(g$FileName[1])),
       MaxDistance = sapply(rv$duplicate_groups, function(g) {
         if(nrow(g) < 2) return("0m")
@@ -636,20 +638,26 @@ server <- function(input, output, session) {
     return(m)
   })
   
+  # Cache for encoded images to avoid re-encoding on selection changes
+  image_cache <- reactiveVal(list())
+  
   # Render duplicate review UI
   output$duplicate_review_ui <- renderUI({
     req(rv$duplicate_groups)
     req(input$duplicates_table_rows_selected)
     
     group_idx <- input$duplicates_table_rows_selected
-    group <- rv$duplicate_groups[[group_idx]]
+    group <- isolate(rv$duplicate_groups[[group_idx]])
     
     if(is.null(group)) return(NULL)
+    
+    # Get current cache
+    cache <- isolate(image_cache())
     
     # Create UI for each image in the group with larger previews
     image_ui <- lapply(1:nrow(group), function(i) {
       img_path <- group$path[i]
-      is_selected <- group$selected[i]
+      is_selected <- rv$duplicate_groups[[group_idx]]$selected[i]  # Only this is reactive
       
       # Calculate column width based on number of images (max 2 per row for better viewing)
       col_width <- if(nrow(group) <= 2) 6 else if(nrow(group) <= 4) 3 else 3
@@ -662,21 +670,52 @@ server <- function(input, output, session) {
           p(style = "color: #555;", 
             icon("clock"), " ", format(group$DateTimeOriginal[i], "%H:%M:%S")),
           if(file.exists(img_path)) {
-            img_data <- image_read(img_path)
-            # Larger preview size for better viewing
-            img_resized <- image_resize(img_data, "800x800")
-            temp_file <- tempfile(fileext = ".jpg")
-            image_write(img_resized, temp_file, format = "jpg", quality = 90)
-            encoded <- base64enc::base64encode(temp_file)
-            unlink(temp_file)
-            tags$a(
-              href = paste0("data:image/jpeg;base64,", encoded),
-              target = "_blank",
-              title = "Click to view full size in new tab",
-              tags$img(src = paste0("data:image/jpeg;base64,", encoded), 
-                      width = "100%", 
-                      style = "cursor: zoom-in; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",
-                      onclick = paste0("Shiny.setInputValue('select_image_", group_idx, "_", i, "', Math.random())"))
+            # Use cached images if available, otherwise encode
+            cache_key <- paste0("img_", group_idx, "_", i)
+            
+            if(!is.null(cache[[cache_key]])) {
+              encoded <- cache[[cache_key]]$preview
+              encoded_full <- cache[[cache_key]]$full
+            } else {
+              img_data <- image_read(img_path)
+              # Larger preview size for better viewing
+              img_resized <- image_resize(img_data, "600x600")  # Reduced from 800 for faster loading
+              temp_file <- tempfile(fileext = ".jpg")
+              image_write(img_resized, temp_file, format = "jpg", quality = 85)  # Reduced quality for speed
+              encoded <- base64enc::base64encode(temp_file)
+              unlink(temp_file)
+              
+              # Also create full-size version for popup
+              img_full <- image_read(img_path)
+              temp_full <- tempfile(fileext = ".jpg")
+              image_write(img_full, temp_full, format = "jpg", quality = 95)
+              encoded_full <- base64enc::base64encode(temp_full)
+              unlink(temp_full)
+              
+              # Cache the encoded images
+              cache[[cache_key]] <- list(preview = encoded, full = encoded_full)
+              image_cache(cache)
+            }
+            
+            tagList(
+              tags$img(
+                src = paste0("data:image/jpeg;base64,", encoded), 
+                width = "100%", 
+                style = "cursor: zoom-in; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",
+                title = "Click to view full size",
+                onclick = sprintf(
+                  "var w = window.open('', '_blank', 'width=1200,height=900,resizable=yes,scrollbars=yes');
+                   w.document.write('<html><head><title>%s</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#222;}</style></head><body><img src=\"data:image/jpeg;base64,%s\" style=\"max-width:100%%;height:auto;\"/></body></html>');
+                   w.document.close();",
+                  basename(group$FileName[i]),
+                  encoded_full
+                )
+              ),
+              tags$br(),
+              tags$small(
+                style = "color: #999;",
+                icon("search-plus"), " Click image to zoom"
+              )
             )
           } else {
             p("Image not found")
@@ -691,11 +730,25 @@ server <- function(input, output, session) {
       )
     })
     
+    # Check if all are selected (keep all mode)
+    all_selected <- all(group$selected)
+    
     tagList(
-      h3(paste("Group", group_idx, "- Review and Select Image"), 
+      h3(paste("Group", group_idx, "- Review and Select Image(s)"), 
          style = "color: #3c8dbc; border-bottom: 2px solid #3c8dbc; padding-bottom: 10px;"),
-      p(style = "color: #666; font-style: italic;", 
-        icon("info-circle"), " Click on any image to view full size in a new tab. Select the best image to keep."),
+      fluidRow(
+        column(8,
+          p(style = "color: #666; font-style: italic;", 
+            icon("info-circle"), " Click on any image to view full-size version in a popup window. Then select the best image to keep, or keep all if they're actually different.")
+        ),
+        column(4,
+          actionButton(paste0("keep_all_", group_idx), 
+                      if(all_selected) "✓ KEEPING ALL" else "Keep All Images",
+                      class = if(all_selected) "btn-warning btn-lg" else "btn-outline-warning btn-lg",
+                      style = "width: 100%; margin-top: 5px;",
+                      icon = if(all_selected) icon("check-double") else icon("layer-group"))
+        )
+      ),
       fluidRow(image_ui)
     )
   })
@@ -707,13 +760,23 @@ server <- function(input, output, session) {
     for(group_idx in 1:length(rv$duplicate_groups)) {
       group <- rv$duplicate_groups[[group_idx]]
       
+      # Handle "Keep All" button
+      local({
+        g_idx <- group_idx
+        observeEvent(input[[paste0("keep_all_", g_idx)]], {
+          # Select all images in this group
+          rv$duplicate_groups[[g_idx]]$selected <- TRUE
+        })
+      })
+      
+      # Handle individual image selection
       for(img_idx in 1:nrow(group)) {
         local({
           g_idx <- group_idx
           i_idx <- img_idx
           
           observeEvent(input[[paste0("select_", g_idx, "_", i_idx)]], {
-            # Update selection
+            # Update selection (only this one selected)
             rv$duplicate_groups[[g_idx]]$selected <- FALSE
             rv$duplicate_groups[[g_idx]]$selected[i_idx] <- TRUE
           })
@@ -747,9 +810,11 @@ server <- function(input, output, session) {
       }
       
       n_excluded <- length(rv$raw_exif$path) - length(selected_paths)
+      n_groups_kept_all <- sum(sapply(rv$duplicate_groups, function(g) all(g$selected)))
       
       rv$log <- paste0(rv$log, "✅ Selection applied: ", length(selected_paths), 
                       " photos selected, ", n_excluded, " duplicates excluded\n",
+                      "   Groups with all photos kept: ", n_groups_kept_all, "\n",
                       "   Filtered photos saved to 'raw_filtered' folder\n")
       
       showNotification(paste("Selection saved!", length(selected_paths), "photos ready for processing"), 
