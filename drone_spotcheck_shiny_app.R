@@ -513,7 +513,7 @@ server <- function(input, output, session) {
     })
   })
   
-  # Render duplicates table
+  # Render duplicates table (only renders once, updates via proxy)
   output$duplicates_table <- renderDT({
     req(rv$duplicate_groups)
     
@@ -521,7 +521,7 @@ server <- function(input, output, session) {
       return(data.frame(Message = "No duplicates found!"))
     }
     
-    # Create summary table
+    # Create summary table - initial render only
     summary_df <- data.frame(
       Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
       Count = sapply(rv$duplicate_groups, nrow),
@@ -798,6 +798,51 @@ server <- function(input, output, session) {
           shinyjs::removeClass(id = paste0("keep_all_", g_idx), class = "btn-outline-warning")
           shinyjs::addClass(id = paste0("keep_all_", g_idx), class = "btn-warning")
           shinyjs::html(id = paste0("keep_all_", g_idx), html = "✓ KEEPING ALL")
+          
+          # Update the table's Selected column using JavaScript to avoid losing selection
+          selected_count <- nrow(rv$duplicate_groups[[g_idx]])
+          shinyjs::runjs(paste0("$('#duplicates_table table tbody tr:eq(", g_idx - 1, ") td:eq(2)').text('", selected_count, "');"))
+          
+          # Old approach that caused selection loss - kept for reference but not executed
+          if(FALSE) {
+          proxy <- dataTableProxy('duplicates_table')
+          replaceData(proxy, isolate({
+            summary_df <- data.frame(
+              Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
+              Count = sapply(rv$duplicate_groups, nrow),
+              Selected = sapply(1:length(rv$duplicate_groups), function(i) {
+                selections <- rv$duplicate_selections[[as.character(i)]]
+                if(is.null(selections)) selections <- rv$duplicate_groups[[i]]$selected
+                sum(selections)
+              }),
+              FirstPhoto = sapply(rv$duplicate_groups, function(g) basename(g$FileName[1])),
+              MaxDistance = sapply(rv$duplicate_groups, function(g) {
+                if(nrow(g) < 2) return("0m")
+                max_dist <- 0
+                for(i in 1:(nrow(g)-1)) {
+                  for(j in (i+1):nrow(g)) {
+                    lat1 <- g$GPSLatitude[i] * pi/180
+                    lat2 <- g$GPSLatitude[j] * pi/180
+                    lon1 <- g$GPSLongitude[i] * pi/180
+                    lon2 <- g$GPSLongitude[j] * pi/180
+                    dlat <- lat2 - lat1
+                    dlon <- lon2 - lon1
+                    a <- sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2
+                    c <- 2 * atan2(sqrt(a), sqrt(1-a))
+                    distance <- 6371000 * c
+                    max_dist <- max(max_dist, distance)
+                  }
+                }
+                paste0(round(max_dist, 1), "m")
+              }),
+              TimeDiff = sapply(rv$duplicate_groups, function(g) {
+                paste0(round(as.numeric(difftime(max(g$DateTimeOriginal), 
+                                                 min(g$DateTimeOriginal), units = "secs"))), "s")
+              })
+            )
+            summary_df
+          }), resetPaging = FALSE, rownames = FALSE)
+          }
         }, ignoreInit = TRUE)
       })
       
@@ -833,58 +878,122 @@ server <- function(input, output, session) {
             shinyjs::removeClass(id = paste0("keep_all_", g_idx), class = "btn-warning")
             shinyjs::addClass(id = paste0("keep_all_", g_idx), class = "btn-outline-warning")
             shinyjs::html(id = paste0("keep_all_", g_idx), html = "Keep All Images")
+            
+            # Update the table's Selected column using JavaScript to avoid losing selection
+            selected_count <- 1
+            shinyjs::runjs(paste0("$('#duplicates_table table tbody tr:eq(", g_idx - 1, ") td:eq(2)').text('", selected_count, "');"))
+            
+            # Old approach that caused selection loss - kept for reference but not executed
+            if(FALSE) {
+            proxy <- dataTableProxy('duplicates_table')
+            replaceData(proxy, isolate({
+              summary_df <- data.frame(
+                Group = sapply(rv$duplicate_groups, function(g) unique(g$group_id)),
+                Count = sapply(rv$duplicate_groups, nrow),
+                Selected = sapply(1:length(rv$duplicate_groups), function(i) {
+                  selections <- rv$duplicate_selections[[as.character(i)]]
+                  if(is.null(selections)) selections <- rv$duplicate_groups[[i]]$selected
+                  sum(selections)
+                }),
+                FirstPhoto = sapply(rv$duplicate_groups, function(g) basename(g$FileName[1])),
+                MaxDistance = sapply(rv$duplicate_groups, function(g) {
+                  if(nrow(g) < 2) return("0m")
+                  max_dist <- 0
+                  for(i in 1:(nrow(g)-1)) {
+                    for(j in (i+1):nrow(g)) {
+                      lat1 <- g$GPSLatitude[i] * pi/180
+                      lat2 <- g$GPSLatitude[j] * pi/180
+                      lon1 <- g$GPSLongitude[i] * pi/180
+                      lon2 <- g$GPSLongitude[j] * pi/180
+                      dlat <- lat2 - lat1
+                      dlon <- lon2 - lon1
+                      a <- sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2
+                      c <- 2 * atan2(sqrt(a), sqrt(1-a))
+                      distance <- 6371000 * c
+                      max_dist <- max(max_dist, distance)
+                    }
+                  }
+                  paste0(round(max_dist, 1), "m")
+                }),
+                TimeDiff = sapply(rv$duplicate_groups, function(g) {
+                  paste0(round(as.numeric(difftime(max(g$DateTimeOriginal), 
+                                                   min(g$DateTimeOriginal), units = "secs"))), "s")
+              })
+            )
+            summary_df
+          }), resetPaging = FALSE, rownames = FALSE)
+            }
           }, ignoreInit = TRUE)
         })
       }
     }
-  })
-  
-  # Apply selection button
+  })  # Apply selection button
   observeEvent(input$btn_apply_selection, {
     req(rv$duplicate_groups)
     req(rv$raw_exif)
     
-    tryCatch({
-      # Get all selected photos
-      selected_paths <- rv$raw_exif$path
-      
-      # Remove non-selected duplicates using separate selection storage
-      for(group_idx in 1:length(rv$duplicate_groups)) {
-        group <- rv$duplicate_groups[[group_idx]]
-        # Get selections from separate storage or use defaults
-        selections <- rv$duplicate_selections[[as.character(group_idx)]]
-        if(is.null(selections)) {
-          selections <- group$selected
+    withProgress(message = 'Applying your selections...', value = 0, {
+      tryCatch({
+        incProgress(0.2, detail = "Processing duplicate groups")
+        
+        # Get all selected photos
+        selected_paths <- rv$raw_exif$path
+        
+        # Remove non-selected duplicates using separate selection storage
+        for(group_idx in 1:length(rv$duplicate_groups)) {
+          group <- rv$duplicate_groups[[group_idx]]
+          # Get selections from separate storage or use defaults
+          selections <- rv$duplicate_selections[[as.character(group_idx)]]
+          if(is.null(selections)) {
+            selections <- group$selected
+          }
+          non_selected <- group$path[!selections]
+          selected_paths <- selected_paths[!selected_paths %in% non_selected]
         }
-        non_selected <- group$path[!selections]
-        selected_paths <- selected_paths[!selected_paths %in% non_selected]
-      }
-      
-      rv$selected_photos <- selected_paths
-      
-      # Create filtered folder
-      dir.create("raw_filtered", showWarnings = FALSE)
-      
-      for(photo in selected_paths) {
-        file.copy(photo, file.path("raw_filtered", basename(photo)), overwrite = TRUE)
-      }
-      
-      n_excluded <- length(rv$raw_exif$path) - length(selected_paths)
-      n_groups_kept_all <- sum(sapply(rv$duplicate_groups, function(g) all(g$selected)))
-      
-      rv$log <- paste0(rv$log, "✅ Selection applied: ", length(selected_paths), 
-                      " photos selected, ", n_excluded, " duplicates excluded\n",
-                      "   Groups with all photos kept: ", n_groups_kept_all, "\n",
-                      "   Filtered photos saved to 'raw_filtered' folder\n")
-      
-      showNotification(paste("Selection saved!", length(selected_paths), "photos ready for processing"), 
-                      type = "message")
-      
-      # Switch back to process tab
-      updateTabItems(session, "sidebar", "process")
-      
-    }, error = function(e) {
-      showNotification(paste("Error:", e$message), type = "error")
+        
+        rv$selected_photos <- selected_paths
+        
+        incProgress(0.5, detail = "Creating filtered folder")
+        
+        # Create filtered folder
+        dir.create("raw_filtered", showWarnings = FALSE)
+        
+        incProgress(0.7, detail = paste("Copying", length(selected_paths), "photos"))
+        
+        for(photo in selected_paths) {
+          file.copy(photo, file.path("raw_filtered", basename(photo)), overwrite = TRUE)
+        }
+        
+        incProgress(0.9, detail = "Finalizing")
+        
+        n_excluded <- length(rv$raw_exif$path) - length(selected_paths)
+        n_groups_kept_all <- sum(sapply(1:length(rv$duplicate_groups), function(i) {
+          selections <- rv$duplicate_selections[[as.character(i)]]
+          if(is.null(selections)) {
+            selections <- rv$duplicate_groups[[i]]$selected
+          }
+          all(selections)
+        }))
+        
+        rv$log <- paste0(rv$log, "✅ Selection applied: ", length(selected_paths), 
+                        " photos selected, ", n_excluded, " duplicates excluded\n",
+                        "   Groups with all photos kept: ", n_groups_kept_all, "\n",
+                        "   Filtered photos saved to 'raw_filtered' folder\n")
+        
+        incProgress(1, detail = "Complete!")
+        
+        showNotification(paste("✓ Selection applied successfully!", length(selected_paths), 
+                              "photos ready for processing"), 
+                        type = "message", duration = 5)
+        
+        # Switch back to process tab
+        Sys.sleep(0.5)  # Brief pause to show completion
+        updateTabItems(session, "sidebar", "process")
+        
+      }, error = function(e) {
+        rv$log <- paste0(rv$log, "❌ ERROR applying selection: ", e$message, "\n")
+        showNotification(paste("Error:", e$message), type = "error", duration = 8)
+      })
     })
   })
   
